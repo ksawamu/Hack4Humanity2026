@@ -25,8 +25,36 @@ class VolunteerApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
         useMaterial3: true,
       ),
-      home: const DiscoveryPage(),
+      // CHANGE THIS LINE: Send them to the AuthGate instead of DiscoveryPage!
+      home: const AuthGate(), 
       debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+// --- THE BOUNCER (Checks if you are logged in) ---
+class AuthGate extends StatelessWidget {
+  const AuthGate({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<AuthState>(
+      // Listens to Supabase to see if a user is logged in
+      stream: Supabase.instance.client.auth.onAuthStateChange,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        }
+        
+        final session = snapshot.hasData ? snapshot.data!.session : null;
+        
+        // If we have a session, go to the App! If not, show the Login screen.
+        if (session != null) {
+          return const DiscoveryPage();
+        } else {
+          return const LoginPage();
+        }
+      },
     );
   }
 }
@@ -40,6 +68,8 @@ class DiscoveryPage extends StatefulWidget {
 
 class _DiscoveryPageState extends State<DiscoveryPage> {
   // --- STATE VARIABLES ---
+  // Grabs the real ID from the currently logged-in user!
+  final String myUserId = Supabase.instance.client.auth.currentUser?.id ?? 'unknown';
   String searchQuery = "";
   String activeFilter = "all";
   String viewMode = "list";
@@ -87,12 +117,14 @@ class _DiscoveryPageState extends State<DiscoveryPage> {
     }
   }
 
+  // --- COMPLETE A TASK (Update) ---
   Future<void> completeTask(String taskId, int xp) async {
     try {
-      await supabase.from('tasks').delete().eq('id', taskId);
-
+      // CHANGE THIS LINE: Set status to 'completed' instead of deleting it!
+      await supabase.from('tasks').update({'status': 'completed'}).eq('id', taskId);
+      
       setState(() {
-        totalXP += xp;
+        totalXP += xp; // Add to local state (for now until auth is done)
       });
 
       if (mounted) {
@@ -101,7 +133,7 @@ class _DiscoveryPageState extends State<DiscoveryPage> {
         );
       }
     } catch (e) {
-      print("Error deleting task: $e");
+      print("Error completing task: $e");
     }
   }
 
@@ -264,10 +296,10 @@ class _DiscoveryPageState extends State<DiscoveryPage> {
                   style: FilledButton.styleFrom(backgroundColor: Colors.teal),
                   onPressed: () {
                     Navigator.pop(context);
-                    // Deletes the task from the DB and gives the user XP!
-                    completeTask(task['id'].toString(), int.tryParse(task['xp'].toString()) ?? 0);
+                    // CHANGE THIS: Call claimTask instead of completeTask!
+                    claimTask(task['id'].toString());
                   },
-                  child: const Text("Complete & Claim XP", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  child: const Text("Claim Task", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 ),
               )
             ],
@@ -411,6 +443,7 @@ class _DiscoveryPageState extends State<DiscoveryPage> {
 
               final liveTasks = snapshot.data ?? [];
               final filteredTasks = liveTasks.where((task) {
+                if (task['status'] == 'claimed') return false;
                 if (searchQuery.isNotEmpty && !task['title'].toString().toLowerCase().contains(searchQuery.toLowerCase())) return false;
                 
                 final duration = task['duration'] is int ? task['duration'] : int.tryParse(task['duration'].toString()) ?? 0;
@@ -594,16 +627,106 @@ class _DiscoveryPageState extends State<DiscoveryPage> {
   // TAB 1: MY TASKS (Placeholder)
   // ==========================================
   Widget _buildMyTasksTab() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.checklist, size: 64, color: Colors.grey.shade400),
-          const SizedBox(height: 16),
-          const Text("No active tasks yet.", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          const Text("Go to Discover to claim one!", style: TextStyle(color: Colors.grey)),
-        ],
-      ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.all(16.0),
+          child: Text("Active Tasks", style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+        ),
+        Expanded(
+          child: StreamBuilder<List<Map<String, dynamic>>>(
+            stream: _tasksStream, // Same live stream!
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator(color: Colors.teal));
+              }
+
+              final liveTasks = snapshot.data ?? [];
+              
+              // ONLY show tasks that have been claimed
+              final claimedTasks = liveTasks.where((t) => t['status'] == 'claimed').toList();
+
+              if (claimedTasks.isEmpty) {
+                return Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.checklist, size: 64, color: Colors.grey.shade300),
+                      const SizedBox(height: 16),
+                      Text("No active tasks yet.", style: TextStyle(fontSize: 18, color: Colors.grey.shade700, fontWeight: FontWeight.bold)),
+                      const Text("Go to Discover to claim one!", style: TextStyle(color: Colors.grey)),
+                    ],
+                  ),
+                );
+              }
+
+              return ListView.builder(
+                padding: const EdgeInsets.only(bottom: 80),
+                itemCount: claimedTasks.length,
+                itemBuilder: (context, index) {
+                  final task = claimedTasks[index];
+                  return Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.teal.shade200, width: 2), // Teal border for active tasks
+                      boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 10, offset: const Offset(0, 4))],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(child: Text(task['title'], style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(color: Colors.amber.shade100, borderRadius: BorderRadius.circular(8)),
+                              child: Text("${task['xp']} XP", style: TextStyle(color: Colors.amber.shade900, fontWeight: FontWeight.bold)),
+                            )
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text("Category: ${task['category']} • ${task['duration']} mins", style: TextStyle(color: Colors.grey.shade600)),
+                        const SizedBox(height: 16),
+                        Row(
+                          children: [
+                            // CANCEL BUTTON
+                            Expanded(
+                              flex: 1,
+                              child: OutlinedButton(
+                                style: OutlinedButton.styleFrom(foregroundColor: Colors.red, side: const BorderSide(color: Colors.red)),
+                                onPressed: () => unclaimTask(task['id'].toString()),
+                                child: const Text("Drop"),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            // COMPLETE BUTTON
+                            Expanded(
+                              flex: 2,
+                              child: FilledButton(
+                                style: FilledButton.styleFrom(backgroundColor: Colors.teal),
+                                onPressed: () {
+                                  // Call completeTask to delete it and award XP!
+                                  completeTask(task['id'].toString(), int.tryParse(task['xp'].toString()) ?? 0);
+                                },
+                                child: const Text("Complete Task"),
+                              ),
+                            ),
+                          ],
+                        )
+                      ],
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 
@@ -721,14 +844,42 @@ class _DiscoveryPageState extends State<DiscoveryPage> {
   }
 
   Widget _buildStatsRow() {
-    return Row(
-      children: [
-        _buildStatCard(Icons.workspace_premium_outlined, "23", "Tasks Done", Colors.blue),
-        const SizedBox(width: 12),
-        _buildStatCard(Icons.schedule, "485", "Mins Donated", Colors.green),
-        const SizedBox(width: 12),
-        _buildStatCard(Icons.bolt, "$totalXP", "Points Earned", Colors.orange),
-      ],
+    return StreamBuilder<List<Map<String, dynamic>>>(
+      stream: _tasksStream, // Listening to the live database!
+      builder: (context, snapshot) {
+        final allTasks = snapshot.data ?? [];
+
+        // 1. Filter for tasks completed by YOU
+        final myCompletedTasks = allTasks.where((t) => 
+          t['status'] == 'completed' && t['claimed_by'] == myUserId
+        ).toList();
+
+        // 2. Count the tasks
+        final tasksDone = myCompletedTasks.length;
+
+        // 3. Add up all the minutes and XP
+        int totalMinutes = 0;
+        int earnedXP = 0; // We can now calculate XP directly from the DB!
+
+        for (var task in myCompletedTasks) {
+          final int duration = int.tryParse(task['duration'].toString()) ?? 0;
+          final int xp = int.tryParse(task['xp'].toString()) ?? 0;
+          
+          totalMinutes += duration;
+          earnedXP += xp;
+        }
+
+        return Row(
+          children: [
+            _buildStatCard(Icons.workspace_premium_outlined, "$tasksDone", "Tasks Done", Colors.blue),
+            const SizedBox(width: 12),
+            _buildStatCard(Icons.schedule, "$totalMinutes", "Mins Donated", Colors.green),
+            const SizedBox(width: 12),
+            // Replaced the hardcoded totalXP variable with our live database calculation!
+            _buildStatCard(Icons.bolt, "$earnedXP", "Points Earned", Colors.orange),
+          ],
+        );
+      }
     );
   }
 
@@ -836,6 +987,108 @@ class _DiscoveryPageState extends State<DiscoveryPage> {
         side: BorderSide.none,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       )).toList(),
+    );
+  }
+}
+// ==========================================
+// LOGIN & SIGN UP PAGE
+// ==========================================
+class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
+
+  @override
+  State<LoginPage> createState() => _LoginPageState();
+}
+
+class _LoginPageState extends State<LoginPage> {
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  bool _isLoading = false;
+
+  Future<void> _authenticate(bool isLogin) async {
+    setState(() => _isLoading = true);
+    try {
+      final email = _emailController.text.trim();
+      final password = _passwordController.text.trim();
+
+      if (isLogin) {
+        // Sign In
+        await Supabase.instance.client.auth.signInWithPassword(email: email, password: password);
+      } else {
+        // Sign Up
+        await Supabase.instance.client.auth.signUp(email: email, password: password);
+      }
+      // Note: We don't need to navigate! The AuthGate StreamBuilder will automatically 
+      // see the login happen and swap the screen to the DiscoveryPage instantly.
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: ${e.toString()}"), backgroundColor: Colors.red));
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.teal.shade50,
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.volunteer_activism, size: 80, color: Colors.teal),
+              const SizedBox(height: 16),
+              const Text("Volunteer Match-30", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.teal)),
+              const SizedBox(height: 40),
+              
+              TextField(
+                controller: _emailController,
+                decoration: InputDecoration(
+                  labelText: "Email", filled: true, fillColor: Colors.white,
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                ),
+              ),
+              const SizedBox(height: 16),
+              
+              TextField(
+                controller: _passwordController,
+                obscureText: true,
+                decoration: InputDecoration(
+                  labelText: "Password", filled: true, fillColor: Colors.white,
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                ),
+              ),
+              const SizedBox(height: 24),
+              
+              _isLoading 
+                ? const CircularProgressIndicator() 
+                : Column(
+                    children: [
+                      SizedBox(
+                        width: double.infinity, height: 50,
+                        child: FilledButton(
+                          style: FilledButton.styleFrom(backgroundColor: Colors.teal),
+                          onPressed: () => _authenticate(true),
+                          child: const Text("Login", style: TextStyle(fontSize: 18)),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        width: double.infinity, height: 50,
+                        child: TextButton(
+                          onPressed: () => _authenticate(false),
+                          child: const Text("Create Account", style: TextStyle(fontSize: 16, color: Colors.teal)),
+                        ),
+                      ),
+                    ],
+                  )
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
